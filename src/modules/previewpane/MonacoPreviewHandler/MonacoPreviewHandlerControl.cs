@@ -359,7 +359,7 @@ namespace Microsoft.PowerToys.PreviewHandler.Monaco
         private void InitializeIndexFileAndSelectedFile(string filePath)
         {
             Logger.LogInfo("Starting getting monaco language id out of filetype");
-            _vsCodeLangSet = FileHandler.GetLanguage(Path.GetExtension(filePath));
+            _vsCodeLangSet = FilePreviewCommon.MonacoHelper.GetLanguage(Path.GetExtension(filePath));
 
             DetectionResult result = CharsetDetector.DetectFromFile(filePath);
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -367,34 +367,30 @@ namespace Microsoft.PowerToys.PreviewHandler.Monaco
             // Check if the detected encoding is not null, otherwise default to UTF-8
             Encoding encodingToUse = result.Detected?.Encoding ?? Encoding.UTF8;
 
-            using (StreamReader fileReader = new StreamReader(new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite), encodingToUse))
-            {
-                Logger.LogInfo("Starting reading requested file");
-                var fileContent = fileReader.ReadToEnd();
+            Logger.LogInfo("Starting reading requested file");
+            string fileContent = File.ReadAllText(filePath, encodingToUse);
 
-                if (_settings.TryFormat)
+            if (_settings.TryFormat)
+            {
+                var formatter = FilePreviewCommon.MonacoHelper.Formatters.SingleOrDefault(f => f.LangSet == _vsCodeLangSet);
+                if (formatter != null)
                 {
-                    var formatter = FilePreviewCommon.MonacoHelper.Formatters.SingleOrDefault(f => f.LangSet == _vsCodeLangSet);
-                    if (formatter != null)
+                    try
                     {
-                        try
-                        {
-                            fileContent = formatter.Format(fileContent);
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.LogError($"Failed to apply formatting to {filePath}", ex);
-                        }
+                        fileContent = formatter.Format(fileContent);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError($"Failed to apply formatting to {filePath}", ex);
                     }
                 }
-
-                fileReader.Close();
-                _base64FileCode = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(fileContent));
-                Logger.LogInfo("Reading requested file ended");
             }
 
+            _base64FileCode = Convert.ToBase64String(Encoding.UTF8.GetBytes(fileContent));
+            Logger.LogInfo("Reading requested file ended");
+
             // prepping index html to load in
-            _html = FilePreviewCommon.MonacoHelper.ReadIndexHtml();
+            _html = FilePreviewCommon.MonacoHelper.IndexHtml;
             _html = _html.Replace("[[PT_LANG]]", _vsCodeLangSet, StringComparison.InvariantCulture);
             _html = _html.Replace("[[PT_WRAP]]", _settings.Wrap ? "1" : "0", StringComparison.InvariantCulture);
             _html = _html.Replace("[[PT_CONTEXTMENU]]", "1", StringComparison.InvariantCulture);

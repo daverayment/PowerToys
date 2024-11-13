@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
 
 using Common.UI;
 using ManagedCommon;
@@ -16,33 +15,8 @@ namespace Peek.FilePreviewer.Previewers
 {
     public class MonacoHelper
     {
-        public static readonly HashSet<string> SupportedMonacoFileTypes = GetExtensions();
-
-        public static HashSet<string> GetExtensions()
-        {
-            HashSet<string> set = new HashSet<string>();
-            try
-            {
-                JsonDocument languageListDocument = Microsoft.PowerToys.FilePreviewCommon.MonacoHelper.GetLanguages();
-                JsonElement languageList = languageListDocument.RootElement.GetProperty("list");
-                foreach (JsonElement e in languageList.EnumerateArray())
-                {
-                    if (e.TryGetProperty("extensions", out var extensions))
-                    {
-                        for (int j = 0; j < extensions.GetArrayLength(); j++)
-                        {
-                            set.Add(extensions[j].ToString());
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError("Failed to get monaco extensions: " + ex.Message);
-            }
-
-            return set;
-        }
+        public static HashSet<string> SupportedMonacoFileTypes =>
+            Microsoft.PowerToys.FilePreviewCommon.MonacoHelper.LanguageExtensionMap.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Prepares temp html for the previewing
@@ -77,7 +51,7 @@ namespace Peek.FilePreviewer.Previewers
             string theme = ThemeManager.GetWindowsBaseColor().ToLowerInvariant();
 
             // prepping index html to load in
-            string html = Microsoft.PowerToys.FilePreviewCommon.MonacoHelper.ReadIndexHtml();
+            string html = Microsoft.PowerToys.FilePreviewCommon.MonacoHelper.IndexHtml;
 
             html = html.Replace("[[PT_LANG]]", vsCodeLangSet, StringComparison.InvariantCulture);
             html = html.Replace("[[PT_WRAP]]", wrapText ? "1" : "0", StringComparison.InvariantCulture);

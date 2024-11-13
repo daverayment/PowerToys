@@ -4,7 +4,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
@@ -15,13 +14,12 @@ namespace Microsoft.PowerToys.FilePreviewCommon
 {
     public static class MonacoHelper
     {
-        /// <summary>
-        /// Name of the virtual host
-        /// </summary>
         public const string VirtualHostName = "PowerToysLocalMonaco";
 
+        private const string DefaultLanguage = "plaintext";
+
         /// <summary>
-        /// Formatters applied before rendering the preview
+        /// Formatters applied before rendering the preview.
         /// </summary>
         public static readonly IReadOnlyCollection<IFormatter> Formatters = new List<IFormatter>
         {
@@ -29,93 +27,83 @@ namespace Microsoft.PowerToys.FilePreviewCommon
             new XmlFormatter(),
         }.AsReadOnly();
 
-        private static string? _monacoDirectory;
-
-        public static string GetRuntimeMonacoDirectory()
-        {
-            string codeBase = Assembly.GetExecutingAssembly().Location;
-            string path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(codeBase) ?? string.Empty, "Assets", "Monaco"));
-            if (Path.Exists(path))
-            {
-                return path;
-            }
-            else
-            {
-                // We're likely in WinUI3Apps directory and need to go back to the base directory.
-                return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(codeBase) ?? string.Empty, "..", "Assets", "Monaco"));
-            }
-        }
-
-        public static string MonacoDirectory
-        {
-            get
-            {
-                if (string.IsNullOrEmpty(_monacoDirectory))
-                {
-                    _monacoDirectory = GetRuntimeMonacoDirectory();
-                }
-
-                return _monacoDirectory;
-            }
-        }
-
-        public static JsonDocument GetLanguages()
-        {
-            JsonDocument languageListDocument;
-            using (StreamReader jsonFileReader = new StreamReader(new FileStream(MonacoDirectory + "\\monaco_languages.json", FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
-            {
-                languageListDocument = JsonDocument.Parse(jsonFileReader.ReadToEnd());
-                jsonFileReader.Close();
-            }
-
-            return languageListDocument;
-        }
+        private static readonly Lazy<Dictionary<string, string>> _languageExtensionMap =
+            new(CreateLanguageExtensionMap);
 
         /// <summary>
-        /// Converts a file extension to a language monaco id.
+        /// Gets the mapping of file extensions to Monaco language IDs.
         /// </summary>
-        /// <param name="fileExtension">The extension of the file (without the dot).</param>
-        /// <returns>The monaco language id</returns>
-        public static string GetLanguage(string fileExtension)
+        public static IReadOnlyDictionary<string, string> LanguageExtensionMap => _languageExtensionMap.Value;
+
+        private static readonly Lazy<string> _monacoDirectory = new(GetRuntimeMonacoDirectory);
+
+        /// <summary>
+        /// Gets the path of the Monaco assets folder.
+        /// </summary>
+        public static string MonacoDirectory => _monacoDirectory.Value;
+
+        private static readonly Lazy<string> _indexHtml =
+            new(() => File.ReadAllText(Path.Combine(MonacoDirectory, "index.html")));
+
+        /// <summary>
+        /// Gets the cached contents of the Monaco index.html file.
+        /// </summary>
+        public static string IndexHtml => _indexHtml.Value;
+
+        private static string GetRuntimeMonacoDirectory()
         {
-            fileExtension = fileExtension.ToLower(CultureInfo.CurrentCulture);
-            try
+            string exePath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty;
+
+            // If the executable is within "WinUI3Apps", correct the path first.
+            if (Path.GetFileName(exePath) == "WinUI3Apps")
             {
-                JsonDocument languageListDocument = GetLanguages();
-                JsonElement languageList = languageListDocument.RootElement.GetProperty("list");
-                foreach (JsonElement e in languageList.EnumerateArray())
+                exePath = Path.Combine(exePath, "..");
+            }
+
+            string monacoPath = Path.Combine(exePath, "Assets", "Monaco");
+
+            return Directory.Exists(monacoPath) ?
+                monacoPath :
+                throw new DirectoryNotFoundException($"Monaco assets directory not found at {monacoPath}");
+        }
+
+        private static Dictionary<string, string> CreateLanguageExtensionMap()
+        {
+            string jsonPath = Path.Combine(MonacoDirectory, "monaco_languages.json");
+
+            using var jsonFileStream = new FileStream(jsonPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var jsonDocument = JsonDocument.Parse(jsonFileStream);
+
+            var languageList = jsonDocument.RootElement.GetProperty("list");
+
+            var map = new Dictionary<string, string>();
+
+            foreach (var item in languageList.EnumerateArray())
+            {
+                if (item.TryGetProperty("id", out var idElement) && idElement.GetString() is string id &&
+                    item.TryGetProperty("extensions", out var extensionsElement) && extensionsElement.ValueKind == JsonValueKind.Array)
                 {
-                    if (e.TryGetProperty("extensions", out var extensions))
+                    foreach (var ext in extensionsElement.EnumerateArray())
                     {
-                        for (int j = 0; j < extensions.GetArrayLength(); j++)
+                        string? extension = ext.GetString();
+
+                        if (extension != null && !map.ContainsKey(extension))
                         {
-                            if (extensions[j].ToString() == fileExtension)
-                            {
-                                return e.GetProperty("id").ToString();
-                            }
+                            map[extension] = id;
                         }
                     }
                 }
+            }
 
-                return "plaintext";
-            }
-            catch (Exception)
-            {
-                return "plaintext";
-            }
+            return map;
         }
 
-        public static string ReadIndexHtml()
-        {
-            string html;
-
-            using (StreamReader htmlFileReader = new StreamReader(new FileStream(MonacoDirectory + "\\index.html", FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
-            {
-                html = htmlFileReader.ReadToEnd();
-                htmlFileReader.Close();
-            }
-
-            return html;
-        }
+        /// <summary>
+        /// Get the Monaco language ID for the supplied file extension.
+        /// </summary>
+        /// <param name="fileExtension">The file extension, including the initial period.</param>
+        /// <returns>The Monaco language ID for the extension, or "plaintext" if not found.</returns>
+        public static string GetLanguage(string fileExtension) =>
+            LanguageExtensionMap.TryGetValue(fileExtension, out string? id) ? id : DefaultLanguage;
     }
 }
