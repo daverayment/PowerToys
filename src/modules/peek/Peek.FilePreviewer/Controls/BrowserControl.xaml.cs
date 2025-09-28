@@ -26,6 +26,11 @@ namespace Peek.FilePreviewer.Controls
     public sealed partial class BrowserControl : Microsoft.UI.Xaml.Controls.UserControl, IDisposable
     {
         /// <summary>
+        /// Used when clearing up the previewer to ensure the prior content is unloaded.
+        /// </summary>
+        private readonly string _blankUri = "data:text/html,<body style='background-color:transparent;'></body>";
+
+        /// <summary>
         /// Helper private Uri where we cache the last navigated page
         /// so we can redirect internal PDF or Webpage links to external
         /// web browser, avoiding WebView internal navigation.
@@ -109,21 +114,21 @@ namespace Peek.FilePreviewer.Controls
         }
 
         /// <summary>
-        /// Navigate to the to the <see cref="Uri"/> set in <see cref="Source"/>.
-        /// Calling <see cref="Navigate"/> will always trigger a navigation/refresh
-        /// even if web target file is the same.
+        /// Navigate to the <see cref="Uri"/> set in <see cref="Source"/>, or to a blank page if
+        /// it is <c>null</c>.
+        /// Imperative command which calls <see cref="CoreWebView2.NavigateToString(string)"/>,
+        /// causing a navigation event even if the target is unchanged.
         /// </summary>
-        public void Navigate()
+        public void NavigateToSource()
         {
-            var value = Environment.GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
-
+            // This ensures that the NavigationStarting event handler does not incorrectly cancel
+            // our programmatic navigation.
             _navigatedUri = null;
 
-            if (Source != null && PreviewBrowser.CoreWebView2 != null)
+            if (PreviewBrowser.CoreWebView2 != null)
             {
-                /* CoreWebView2.Navigate() will always trigger a navigation even if the content/URI is the same.
-                 * Use WebView2.Source to avoid re-navigating to the same content. */
-                PreviewBrowser.CoreWebView2.Navigate(Source.ToString());
+                string uri = Source is not null ? Source.ToString() : _blankUri;
+                PreviewBrowser.CoreWebView2.Navigate(uri);
             }
         }
 
@@ -135,7 +140,7 @@ namespace Peek.FilePreviewer.Controls
             // This ensures that non-HTML files are displayed with a transparent background.
             PreviewBrowser.DefaultBackgroundColor = Color.FromArgb(0, 0, 0, 0);
 
-            Navigate();
+            NavigateToSource();
         }
 
         private void OnIsDevFilePreviewChanged()
@@ -158,13 +163,17 @@ namespace Peek.FilePreviewer.Controls
         {
             try
             {
+                // Note: the WebView2 browser control can be further customized for debugging
+                // purposes through the use of browser flags, accessible via the
+                // "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS" environment var or registry keys.
+                // More information: https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/webview-features-flags?tabs=dotnetcsharp
                 await PreviewBrowser.EnsureCoreWebView2Async();
 
                 // Storing the original background color so it can be reset later for specific file types like HTML.
                 if (!_originalBackgroundColor.HasValue)
                 {
                     // HACK: We used to store PreviewBrowser.DefaultBackgroundColor here, but WebView started returning transparent when running without a debugger attached. We want html files to be seen as in the browser, which has white as a default background color.
-                    _originalBackgroundColor = Microsoft.UI.Colors.White;
+                    _originalBackgroundColor = Colors.White;
                 }
 
                 // Setting the background color to transparent when initially loading the WebView2 component.
@@ -198,7 +207,7 @@ namespace Peek.FilePreviewer.Controls
                 Logger.LogError("WebView2 loading failed. " + ex.Message);
             }
 
-            Navigate();
+            NavigateToSource();
         }
 
         private List<Control> GetContextMenuItems(CoreWebView2 sender, CoreWebView2ContextMenuRequestedEventArgs args)

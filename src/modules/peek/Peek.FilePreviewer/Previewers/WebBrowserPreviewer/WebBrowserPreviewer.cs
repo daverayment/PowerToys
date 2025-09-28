@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using CommunityToolkit.Mvvm.ComponentModel;
+using ManagedCommon;
 using Microsoft.UI.Dispatching;
 using Peek.Common.Constants;
 using Peek.Common.Extensions;
@@ -21,6 +22,8 @@ namespace Peek.FilePreviewer.Previewers
     public partial class WebBrowserPreviewer : ObservableObject, IBrowserPreviewer, IDisposable
     {
         private readonly IPreviewSettings _previewSettings;
+
+        private bool _disposed;
 
         private static readonly HashSet<string> _supportedFileTypes = new()
         {
@@ -47,8 +50,6 @@ namespace Peek.FilePreviewer.Previewers
         [ObservableProperty]
         private bool customContextMenu;
 
-        private bool disposed;
-
         public WebBrowserPreviewer(IFileSystemItem file, IPreviewSettings previewSettings)
         {
             _previewSettings = previewSettings;
@@ -56,33 +57,11 @@ namespace Peek.FilePreviewer.Previewers
             Dispatcher = DispatcherQueue.GetForCurrentThread();
         }
 
-        ~WebBrowserPreviewer()
-        {
-            Dispose(false);
-        }
-
-        public void Dispose()
-        {
-            Dispose(true);
-            GC.SuppressFinalize(this);
-        }
-
-        protected virtual async void Dispose(bool disposing)
-        {
-            if (!this.disposed)
-            {
-                await Microsoft.PowerToys.FilePreviewCommon.Helper.CleanupTempDirAsync(TempFolderPath.Path);
-                disposed = true;
-            }
-        }
-
         private IFileSystemItem File { get; }
 
         public bool IsPreviewLoaded => Preview != null;
 
         private DispatcherQueue Dispatcher { get; }
-
-        private Task<bool>? DisplayInfoTask { get; set; }
 
         public Task<PreviewSize> GetPreviewSizeAsync(CancellationToken cancellationToken)
         {
@@ -93,12 +72,9 @@ namespace Peek.FilePreviewer.Previewers
         {
             cancellationToken.ThrowIfCancellationRequested();
             State = PreviewState.Loading;
-            await LoadDisplayInfoAsync(cancellationToken);
 
-            if (HasFailedLoadingPreview())
-            {
-                State = PreviewState.Error;
-            }
+            var success = await LoadDisplayInfoAsync(cancellationToken);
+            State = success ? PreviewState.Loaded : PreviewState.Error;
         }
 
         public Task<bool> LoadDisplayInfoAsync(CancellationToken cancellationToken)
@@ -109,7 +85,7 @@ namespace Peek.FilePreviewer.Previewers
 
                 await Dispatcher.RunOnUiThread(async () =>
                 {
-                    bool isHtml = File.Extension == ".html" || File.Extension == ".htm";
+                    bool isHtml = File.Extension is ".html" or ".htm";
                     bool isMarkdown = File.Extension == ".md";
 
                     bool supportedByMonaco = MonacoHelper.SupportedMonacoFileTypes.Contains(File.Extension);
@@ -121,7 +97,16 @@ namespace Peek.FilePreviewer.Previewers
                     if (useMonaco)
                     {
                         var raw = await ReadHelper.Read(File.Path.ToString());
-                        Preview = new Uri(MonacoHelper.PreviewTempFile(raw, File.Extension, TempFolderPath.Path, _previewSettings.SourceCodeTryFormat, _previewSettings.SourceCodeWrapText, _previewSettings.SourceCodeStickyScroll, _previewSettings.SourceCodeFontSize, _previewSettings.SourceCodeMinimap));
+                        Preview = new Uri(
+                            MonacoHelper.PreviewTempFile(
+                                raw,
+                                File.Extension,
+                                TempFolderPath.Path,
+                                _previewSettings.SourceCodeTryFormat,
+                                _previewSettings.SourceCodeWrapText,
+                                _previewSettings.SourceCodeStickyScroll,
+                                _previewSettings.SourceCodeFontSize,
+                                _previewSettings.SourceCodeMinimap));
                     }
                     else if (isMarkdown)
                     {
@@ -152,9 +137,36 @@ namespace Peek.FilePreviewer.Previewers
             return _supportedFileTypes.Contains(item.Extension) || MonacoHelper.SupportedMonacoFileTypes.Contains(item.Extension);
         }
 
-        private bool HasFailedLoadingPreview()
+        public void Dispose()
         {
-            return !(DisplayInfoTask?.Result ?? true);
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+
+            try
+            {
+                Unload();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("Error disposing of WebBrowserPreviewer.", ex);
+            }
+            finally
+            {
+                GC.SuppressFinalize(this);
+            }
+        }
+
+        /// <summary>
+        /// Explicitly releases any file:// handle and cleans up temp files.
+        /// </summary>
+        public void Unload()
+        {
+            Preview = null;
+            Microsoft.PowerToys.FilePreviewCommon.Helper.CleanupTempDir(TempFolderPath.Path);
         }
     }
 }
