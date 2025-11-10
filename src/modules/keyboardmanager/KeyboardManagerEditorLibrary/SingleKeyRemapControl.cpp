@@ -74,6 +74,20 @@ SingleKeyRemapControl::SingleKeyRemapControl(StackPanel table, StackPanel row, c
 
             singleKeyRemapBuffer[rowIndex].mapping[1] = text.c_str();
         });
+        textInput.GotFocus([](auto const& sender, auto const& e) {
+            if (SingleKeyRemapControl::keyboardManagerState)
+            {
+                SingleKeyRemapControl::keyboardManagerState->SetTextBoxFocusState(true);
+            }
+        });
+        textInput.LostFocus([](auto const& sender, auto const& e) {
+            if (SingleKeyRemapControl::keyboardManagerState)
+            {
+                SingleKeyRemapControl::keyboardManagerState->SetTextBoxFocusState(false);
+            }
+        });
+        // Note: If adding more TextBoxes, consider extracting OnTextBoxGotFocus/OnTextBoxLostFocus
+        // helpers like in ShortcutControl.cpp
 
         auto typeCombo = ComboBox();
         typeCombo.Width(EditorConstants::RemapTableDropDownWidth);

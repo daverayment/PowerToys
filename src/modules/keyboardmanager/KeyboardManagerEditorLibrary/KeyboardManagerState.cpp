@@ -349,6 +349,12 @@ void KeyboardManagerState::ResetDetectedShortcutKey(DWORD key)
 // Function which can be used in HandleKeyboardHookEvent before the single key remap event to use the UI and suppress events while the remap window is active.
 Helpers::KeyboardHookDecision KeyboardManagerState::DetectSingleRemapKeyUIBackend(LowlevelKeyboardEvent* data)
 {
+    // If a configuration-related TextBox has focus, don't intercept keyboard events.
+    if (m_textBoxHasFocus)
+    {
+        return Helpers::KeyboardHookDecision::SkipHook;
+    }
+
     // Check if the detect key UI window has been activated
     if (CheckUIState(KeyboardManagerUIState::DetectSingleKeyRemapWindowActivated))
     {
@@ -378,6 +384,12 @@ Helpers::KeyboardHookDecision KeyboardManagerState::DetectSingleRemapKeyUIBacken
 // Function which can be used in HandleKeyboardHookEvent before the os level shortcut remap event to use the UI and suppress events while the remap window is active.
 Helpers::KeyboardHookDecision KeyboardManagerState::DetectShortcutUIBackend(LowlevelKeyboardEvent* data, bool isRemapKey)
 {
+    // If a configuration-related TextBox has focus, don't intercept keyboard events.
+    if (m_textBoxHasFocus)
+    {
+        return Helpers::KeyboardHookDecision::SkipHook;
+    }
+
     // Check if the detect shortcut UI window has been activated
     if ((!isRemapKey && CheckUIState(KeyboardManagerUIState::DetectShortcutWindowActivated)) || (isRemapKey && CheckUIState(KeyboardManagerUIState::DetectShortcutWindowInEditKeyboardWindowActivated)))
     {

@@ -81,6 +81,9 @@ namespace KBMEditor
         std::map<DWORD, std::unique_ptr<KeyDelay>> keyDelays;
         std::mutex keyDelays_mutex;
 
+        // Flag to indicate a configuration-related TextBox has focus and the keyboard hook should not intercept.
+        std::atomic<bool> m_textBoxHasFocus = false;
+
     public:
         // Display a key by appending a border Control as a child of the panel.
         winrt::Windows::UI::Xaml::Controls::TextBlock AddKeyToLayout(const winrt::Windows::UI::Xaml::Controls::StackPanel& panel, const winrt::hstring& key);
@@ -170,5 +173,9 @@ namespace KBMEditor
 
         // Reset the shortcut (backend) state after releasing a key.
         void ResetDetectedShortcutKey(DWORD key);
+
+        // Methods to set/clear the TextBox focus flag.
+        void SetTextBoxFocusState(bool hasFocus) { m_textBoxHasFocus = hasFocus; }
+        bool IsTextBoxFocused() const { return m_textBoxHasFocus; }
     };
 }

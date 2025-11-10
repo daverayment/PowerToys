@@ -18,6 +18,26 @@ KBMEditor::KeyboardManagerState* ShortcutControl::keyboardManagerState = nullptr
 // Initialized as new vector
 RemapBuffer ShortcutControl::shortcutRemapBuffer;
 
+// Helper functions for TextBox focus tracking.
+namespace
+{
+    void OnTextBoxGotFocus(winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const& e)
+    {
+        if (ShortcutControl::keyboardManagerState)
+        {
+            ShortcutControl::keyboardManagerState->SetTextBoxFocusState(true);
+        }
+    }
+
+    void OnTextBoxLostFocus(winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const& e)
+    {
+        if (ShortcutControl::keyboardManagerState)
+        {
+            ShortcutControl::keyboardManagerState->SetTextBoxFocusState(false);
+        }
+    }
+}
+
 ShortcutControl::ShortcutControl(StackPanel table, StackPanel row, const int colIndex, TextBox targetApp)
 {
     shortcutDropDownVariableSizedWrapGrid = VariableSizedWrapGrid();
@@ -220,6 +240,9 @@ ShortcutControl& ShortcutControl::AddNewShortcutControlRow(StackPanel& parent, s
         shortcutRemapBuffer[rowIndex].mapping[1] = text.c_str();
     });
 
+    unicodeTextKeysInput.GotFocus(OnTextBoxGotFocus);
+    unicodeTextKeysInput.LostFocus(OnTextBoxLostFocus);
+
     const bool textSelected = newKeys.index() == 2;
     bool isRunProgram = false;
     bool isOpenUri = false;
@@ -314,12 +337,15 @@ ShortcutControl& ShortcutControl::AddNewShortcutControlRow(StackPanel& parent, s
 
     // GotFocus handler will be called whenever the user tabs into or clicks on the textbox
     targetAppTextBox.GotFocus([targetAppTextBox](auto const& sender, auto const& e) {
+        OnTextBoxGotFocus(sender, e);
         // Select all text for accessible purpose
         targetAppTextBox.SelectAll();
     });
 
     // LostFocus handler will be called whenever text is updated by a user and then they click something else or tab to another control. Does not get called if Text is updated while the TextBox isn't in focus (i.e. from code)
     targetAppTextBox.LostFocus([&keyboardRemapControlObjects, parent, row, targetAppTextBox, actionTypeCombo, unicodeTextKeysInput](auto const& sender, auto const& e) {
+        OnTextBoxLostFocus(sender, e);
+
         // Get index of targetAppTextBox button
         uint32_t rowIndex;
         if (!parent.Children().IndexOf(row, rowIndex))
@@ -574,6 +600,9 @@ StackPanel SetupOpenURIControls(StackPanel& parent, StackPanel& row, Shortcut& s
         ShortcutControl::shortcutRemapBuffer[rowIndex].mapping[1] = tempShortcut;
     });
 
+    uriTextBox.GotFocus(OnTextBoxGotFocus);
+    uriTextBox.LostFocus(OnTextBoxLostFocus);
+
     _controlStackPanel.Children().Append(openUriStackPanel);
     return openUriStackPanel;
 }
@@ -594,6 +623,8 @@ StackPanel SetupRunProgramControls(StackPanel& parent, StackPanel& row, Shortcut
     runProgramArgsForProgramInput.Name(L"runProgramArgsForProgramInput_" + std::to_wstring(rowIndex));
     auto runProgramStartInDirInput = TextBox();
     runProgramStartInDirInput.Name(L"runProgramStartInDirInput_" + std::to_wstring(rowIndex));
+    runProgramPathInput.GotFocus(OnTextBoxGotFocus);
+    runProgramPathInput.LostFocus(OnTextBoxLostFocus);
 
     Button pickFileBtn;
     Button pickPathBtn;
@@ -623,6 +654,8 @@ StackPanel SetupRunProgramControls(StackPanel& parent, StackPanel& row, Shortcut
     runProgramArgsForProgramInput.IsSpellCheckEnabled(false);
     runProgramArgsForProgramInput.Width(EditorConstants::TableDropDownHeight);
     runProgramArgsForProgramInput.HorizontalAlignment(HorizontalAlignment::Left);
+    runProgramArgsForProgramInput.GotFocus(OnTextBoxGotFocus);
+    runProgramArgsForProgramInput.LostFocus(OnTextBoxLostFocus);
 
     runProgramStartInDirInput.IsSpellCheckEnabled(false);
     runProgramStartInDirInput.PlaceholderText(GET_RESOURCE_STRING(IDS_EDITSHORTCUTS_START_IN_DIR_FOR_PROGRAM));
@@ -630,6 +663,8 @@ StackPanel SetupRunProgramControls(StackPanel& parent, StackPanel& row, Shortcut
     runProgramStartInDirInput.AcceptsReturn(false);
     runProgramStartInDirInput.Width(EditorConstants::TableDropDownHeight);
     runProgramStartInDirInput.HorizontalAlignment(HorizontalAlignment::Left);
+    runProgramStartInDirInput.GotFocus(OnTextBoxGotFocus);
+    runProgramStartInDirInput.LostFocus(OnTextBoxLostFocus);
 
     stackPanelForRunProgramPath.Orientation(Orientation::Horizontal);
     stackPanelRunProgramStartInDir.Orientation(Orientation::Horizontal);
