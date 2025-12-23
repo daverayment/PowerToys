@@ -23,15 +23,20 @@ namespace Microsoft.Plugin.WindowWalker.Components
     internal class Window
     {
         /// <summary>
+        /// Specifies the maximum allowed length, in characters, for a window class name,
+        /// including trailing null.
+        /// </summary>
+        private const int MaxClassNameLength = 256;
+
+        /// <summary>
         /// The handle to the window
         /// </summary>
         private readonly IntPtr hwnd;
 
         /// <summary>
-        /// A static cache for the process data of all known windows
-        /// that we don't have to query the data every time
+        /// Caches the process data for enumerated windows. Access must be guarded via a lock.
         /// </summary>
-        private static readonly Dictionary<IntPtr, WindowProcess> _handlesToProcessCache = new Dictionary<IntPtr, WindowProcess>();
+        private static readonly Dictionary<IntPtr, WindowProcess> _handlesToProcessCache = [];
 
         /// <summary>
         /// An instance of <see cref="WindowProcess"/> that contains the process information for the window
@@ -44,28 +49,56 @@ namespace Microsoft.Plugin.WindowWalker.Components
         private readonly VDesktop desktopInfo;
 
         /// <summary>
+        /// Limits concurrent expensive UWP window name fixup tasks (child enumeration
+        /// and process queries). Prevents queuing too many concurrent fixups when typing
+        /// quickly and/or when many UWP windows are open.
+        /// </summary>
+        private static readonly SemaphoreSlim _uwpFixupSemaphore = new(2, 2);
+
+        /// <summary>
+        /// Holds a thread-local cached instance of a <see cref="StringBuilder"/> for
+        /// reuse within the current thread.
+        /// </summary>
+        [ThreadStatic]
+        private static StringBuilder _cachedBuilder;
+
+        /// <summary>
+        /// Helper to retrieve a cached StringBuilder instance for the current thread
+        /// with at least the requested capacity.
+        /// </summary>
+        private static StringBuilder GetCachedStringBuilder(int capacity)
+        {
+            _cachedBuilder ??= new StringBuilder(capacity);
+
+            _cachedBuilder.Clear();
+
+            if (_cachedBuilder.Capacity < capacity)
+            {
+                _cachedBuilder.EnsureCapacity(capacity);
+            }
+
+            return _cachedBuilder;
+        }
+
+        /// <summary>
         /// Gets the title of the window (the string displayed at the top of the window)
         /// </summary>
         internal string Title
         {
             get
             {
-                int sizeOfTitle = NativeMethods.GetWindowTextLength(hwnd);
-                if (sizeOfTitle++ > 0)
+                int length = NativeMethods.GetWindowTextLength(hwnd);
+                if (length > 0)
                 {
-                    StringBuilder titleBuffer = new StringBuilder(sizeOfTitle);
-                    var numCharactersWritten = NativeMethods.GetWindowText(hwnd, titleBuffer, sizeOfTitle);
-                    if (numCharactersWritten == 0)
+                    var builder = GetCachedStringBuilder(length + 1);
+                    length = NativeMethods.GetWindowText(hwnd, builder, builder.Capacity);
+                    if (length > 0)
                     {
-                        return string.Empty;
+                        return builder.ToString();
                     }
+                }
 
-                    return titleBuffer.ToString();
-                }
-                else
-                {
-                    return string.Empty;
-                }
+                return string.Empty;
             }
         }
 
@@ -341,15 +374,78 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <returns>Class name</returns>
         private static string GetWindowClassName(IntPtr hwnd)
         {
-            StringBuilder windowClassName = new StringBuilder(300);
-            var numCharactersWritten = NativeMethods.GetClassName(hwnd, windowClassName, windowClassName.MaxCapacity);
+            var builder = GetCachedStringBuilder(MaxClassNameLength);
+            return NativeMethods.GetClassName(hwnd, builder, builder.Capacity) == 0 ? string.Empty : builder.ToString();
+        }
 
-            if (numCharactersWritten == 0)
+        /// <summary>
+        /// Attempts to identify and update the child process information for a UWP
+        /// application's main window.
+        /// </summary>
+        /// <param name="windowHandle">A handle to the main window of the process to
+        /// inspect. Must be a valid window handle.</param>
+        /// <param name="originalProcessInfo">The original process information associated
+        /// with the specified window. Used to verify and update process details if a UWP
+        /// child window is found.</param>
+        private static void RunUwpFixup(IntPtr windowHandle, WindowProcess originalProcessInfo)
+        {
+            var acquiredSemaphore = false;
+            var found = false;
+            var childProcessId = 0u;
+            var childThreadId = 0u;
+            var childProcessName = string.Empty;
+
+            try
             {
-                return string.Empty;
-            }
+                _uwpFixupSemaphore.Wait();
+                acquiredSemaphore = true;
 
-            return windowClassName.ToString();
+                EnumWindowsProc callbackptr = new((hwnd, lParam) =>
+                {
+                    // Search for the child window that belongs to the UWP app process,
+                    // ignoring "ApplicationFrame" windows.
+                    if (GetWindowClassName(hwnd).StartsWith("Windows.UI.Core.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Retrieve the information for the child window's process. The
+                        // information is committed back to the cache after enumeration.
+                        // We use locals here to avoid a lock on the cache during
+                        // enumeration.
+                        childProcessId = WindowProcess.GetProcessIDFromWindowHandle(hwnd);
+                        childThreadId = WindowProcess.GetThreadIDFromWindowHandle(hwnd);
+                        childProcessName = WindowProcess.GetProcessNameFromProcessID(childProcessId);
+
+                        found = true;
+                        return false;   // stop enumeration
+                    }
+
+                    return true;
+                });
+
+                _ = NativeMethods.EnumChildWindows(windowHandle, callbackptr, 0);
+            }
+            finally
+            {
+                if (acquiredSemaphore)
+                {
+                    _uwpFixupSemaphore.Release();
+                }
+
+                lock (_handlesToProcessCache)
+                {
+                    // Cache entries may have been evicted, so verify that the original
+                    // process info is still associated with the window handle.
+                    if (_handlesToProcessCache.TryGetValue(windowHandle, out WindowProcess processInfo)
+                        && ReferenceEquals(processInfo, originalProcessInfo))
+                    {
+                        if (found)
+                        {
+                            processInfo.UpdateProcessInfo(childProcessId, childThreadId, childProcessName);
+                        }
+
+                        processInfo.IsUwpFixupInFlight = false;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -359,6 +455,9 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <returns>A new Instance of type <see cref="WindowProcess"/></returns>
         private static WindowProcess CreateWindowProcessInstance(IntPtr hWindow)
         {
+            WindowProcess processInfo;
+            var shouldRunFixup = false;
+
             lock (_handlesToProcessCache)
             {
                 if (_handlesToProcessCache.Count > 7000)
@@ -387,37 +486,23 @@ namespace Microsoft.Plugin.WindowWalker.Components
                     }
                 }
 
-                // Correct the process data if the window belongs to a uwp app hosted by 'ApplicationFrameHost.exe'
-                // (This only works if the window isn't minimized. For minimized windows the required child window isn't assigned.)
-                if (string.Equals(_handlesToProcessCache[hWindow].Name, "ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    new Task(() =>
-                    {
-                        EnumWindowsProc callbackptr = new EnumWindowsProc((IntPtr hwnd, IntPtr lParam) =>
-                        {
-                            // Every uwp app main window has at least three child windows. Only the one we are interested in has a class starting with "Windows.UI.Core." and is assigned to the real app process.
-                            // (The other ones have a class name that begins with the string "ApplicationFrame".)
-                            if (GetWindowClassName(hwnd).StartsWith("Windows.UI.Core.", StringComparison.OrdinalIgnoreCase))
-                            {
-                                var childProcessId = WindowProcess.GetProcessIDFromWindowHandle(hwnd);
-                                var childThreadId = WindowProcess.GetThreadIDFromWindowHandle(hwnd);
-                                var childProcessName = WindowProcess.GetProcessNameFromProcessID(childProcessId);
+                processInfo = _handlesToProcessCache[hWindow];
 
-                                // Update process info in cache
-                                _handlesToProcessCache[hWindow].UpdateProcessInfo(childProcessId, childThreadId, childProcessName);
-                                return false;
-                            }
-                            else
-                            {
-                                return true;
-                            }
-                        });
-                        _ = NativeMethods.EnumChildWindows(hWindow, callbackptr, 0);
-                    }).Start();
-                }
-
-                return _handlesToProcessCache[hWindow];
+                // Marks the UWP fixup as in-flight (and throttles repeat attempts) if a
+                // fixup is needed.
+                shouldRunFixup = processInfo.TryBeginUwpFixup();
             }
+
+            if (shouldRunFixup)
+            {
+                // Correct the process data if the window belongs to a UWP app hosted by
+                // 'ApplicationFrameHost.exe'. This is a best-effort fixup that works
+                // for non-minimized UWP windows. (Minimized UWP windows do not have the
+                // required child window.)
+                _ = Task.Run(() => RunUwpFixup(hWindow, processInfo));
+            }
+
+            return processInfo;
         }
     }
 }

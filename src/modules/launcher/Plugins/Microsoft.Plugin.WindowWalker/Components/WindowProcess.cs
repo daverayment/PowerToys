@@ -22,6 +22,11 @@ namespace Microsoft.Plugin.WindowWalker.Components
         private const int MaximumFileNameLength = 1000;
 
         /// <summary>
+        /// Throttle interval for UWP fixup attempts in milliseconds
+        /// </summary>
+        private const long UwpFixupThrottleIntervalMs = 1000;
+
+        /// <summary>
         /// An indicator if the window belongs to an 'Universal Windows Platform (UWP)' process
         /// </summary>
         private readonly bool _isUwpApp;
@@ -43,11 +48,12 @@ namespace Microsoft.Plugin.WindowWalker.Components
             {
                 try
                 {
-                    return Process.GetProcessById((int)ProcessID).Responding;
+                    using var process = Process.GetProcessById((int)ProcessID);
+                    return process.Responding;
                 }
                 catch (InvalidOperationException)
                 {
-                    // Thrown when process not exist.
+                    // Thrown when process does not exist.
                     return true;
                 }
                 catch (NotSupportedException)
@@ -83,6 +89,25 @@ namespace Microsoft.Plugin.WindowWalker.Components
         }
 
         /// <summary>
+        /// Gets or sets a value indicating whether the UWP process fixup
+        /// (ApplicationFrameHost.exe to real process) is in flight. Used to control
+        /// concurrent fixup attempts.
+        /// </summary>
+        internal bool IsUwpFixupInFlight
+        {
+            get; set;
+        }
+
+        /// <summary>
+        /// Gets or sets the tick count of the last UWP fixup attempt. Used to throttle
+        /// fixup scheduling.
+        /// </summary>
+        internal long LastUwpFixupAttemptTickCount
+        {
+            get; set;
+        }
+
+        /// <summary>
         /// Gets a value indicating whether this is the shell process or not
         /// The shell process (like explorer.exe) hosts parts of the user interface (like taskbar, start menu, ...)
         /// </summary>
@@ -104,8 +129,7 @@ namespace Microsoft.Plugin.WindowWalker.Components
             {
                 try
                 {
-                    var p = Process.GetProcessById((int)ProcessID);
-                    p.Dispose();
+                    using var process = Process.GetProcessById((int)ProcessID);
                     return true;
                 }
                 catch (InvalidOperationException)
@@ -155,7 +179,7 @@ namespace Microsoft.Plugin.WindowWalker.Components
             Name = name;
 
             // Process can be elevated only if process id is not 0 (Dummy value on error)
-            IsFullAccessDenied = (pid != 0) ? TestProcessAccessUsingAllAccessFlag(pid) : false;
+            IsFullAccessDenied = (pid != 0) && TestProcessAccessUsingAllAccessFlag(pid);
         }
 
         /// <summary>
@@ -239,6 +263,28 @@ namespace Microsoft.Plugin.WindowWalker.Components
                 _ = Win32Helpers.CloseHandleIfNotNull(processHandle);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Attempts to start a UWP fixup for this process. If allowed, marks the fixup
+        /// as in-flight and records the attempt time to enforce throttling.
+        /// </summary>
+        /// <returns>True if a fixup should be scheduled now; otherwise false (already
+        /// in-flight or throttled).</returns>
+        internal bool TryBeginUwpFixup()
+        {
+            var currentTickCount = Environment.TickCount64;
+
+            if (string.Equals(this.Name, "ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase)
+                && !IsUwpFixupInFlight
+                && currentTickCount - LastUwpFixupAttemptTickCount >= UwpFixupThrottleIntervalMs)
+            {
+                IsUwpFixupInFlight = true;
+                LastUwpFixupAttemptTickCount = currentTickCount;
+                return true;
+            }
+
+            return false;
         }
     }
 }
